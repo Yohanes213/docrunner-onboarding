@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Turn a generated field list into a loader that places the fields in a DocRunner template.
+
+    python3 make_loader.py my_template_fields.json \\
+        --slot S1="Owner 1" --slot S2="Owner 2" --slot CO="PM:2" \\
+        [--append] [--dry-run] > place_fields.js
+
+Then, signed in to DocRunner, open the template's field editor
+(Templates > the template > Edit fields, the page at /templates/<id>/fields)
+and run place_fields.js in that page: paste it into the browser's DevTools
+console, or have Claude run it with a browser tool.
+
+What the loader does, in the page:
+  1. Downloads a backup of the template's current fields and signers
+     (docrunner-template-<id>-backup.json) before changing anything.
+  2. Matches each signer slot label in your field list (S1, CO, ...) to the
+     template's signer of that name, and adds any signer that doesn't exist
+     yet (with the signing order after the colon, default 1). Signers that no
+     field uses are removed (a new template starts with a default "Signer",
+     which would otherwise become an extra role and stop packets completing).
+  3. Replaces the template's fields with yours (or adds yours to the existing
+     ones with --append, skipping any with the same name on the same page).
+  4. Saves through the editor's own save request (your session, the page's
+     security token), then reloads the editor so you can check the result.
+  With --dry-run it does steps 1 and 2 and prints what it would save, without saving.
+
+Signer names decide the API role keys. DocRunner drops a trailing number and
+lowercases the rest: "Owner 1" and "Owner 2" become role `owner`, "PM"
+becomes `pm`. The API accepts only `owner`, `tenant` and `pm`, so name the
+signers "Owner", "Owner 1", "Owner 2", "Tenant", "Tenant 1", "PM" if your app
+will create packets through the API.
+
+This uses the editor's save request, not a published API: it works on your
+own account, in your own signed-in browser, and may change when the editor
+does. Check https://developer.docrunner.io for an official way first.
+"""
+import argparse
+import json
+import sys
+
+TYPES = {'variable', 'text', 'checkbox', 'signature', 'initials', 'signature_date', 'date', 'radio', 'dropdown', 'file', 'payment', 'people', 'status'}
+
+
+def check(fields, slots):
+    problems = []
+    names = set()
+    for i, f in enumerate(fields):
+        where = f"field {i} ({f.get('name', '?')})"
+        for key in ('uuid', 'type', 'name', 'page', 'x', 'y', 'w', 'h'):
+            if key not in f:
+                problems.append(f'{where}: missing {key}')
+        if f.get('type') not in TYPES:
+            problems.append(f"{where}: unknown type {f.get('type')!r}")
+        if not isinstance(f.get('page'), int) or f.get('page', 0) < 0:
+            problems.append(f'{where}: page must be a 0-based integer')
+        for key in ('x', 'y', 'w', 'h'):
+            v = f.get(key)
+            if not isinstance(v, (int, float)) or not 0 <= v <= 1:
+                problems.append(f'{where}: {key} must be a fraction of the page (0 to 1)')
+        if isinstance(f.get('x'), (int, float)) and isinstance(f.get('w'), (int, float)) and f['x'] + f['w'] > 1.001:
+            problems.append(f'{where}: runs off the right edge')
+        if isinstance(f.get('y'), (int, float)) and isinstance(f.get('h'), (int, float)) and f['y'] + f['h'] > 1.001:
+            problems.append(f'{where}: runs off the bottom')
+        if f.get('type') == 'variable':
+            if f.get('submitter'):
+                problems.append(f'{where}: a variable belongs to no signer; remove its submitter')
+        else:
+            label = f.get('submitter')
+            if not label:
+                problems.append(f'{where}: a signer field needs a submitter (one of {sorted(slots)})')
+            elif label not in slots:
+                problems.append(f'{where}: submitter {label!r} has no --slot')
+        if f.get('type') == 'signature_date' and f.get('required'):
+            problems.append(f'{where}: a signature_date must not be required (it blocks Complete)')
+        key = (f.get('name'), f.get('page'))
+        if key in names and f.get('type') != 'radio':
+            problems.append(f'{where}: same name on the same page twice')
+        names.add(key)
+    if not any(f.get('type') != 'variable' for f in fields):
+        problems.append('no signer fields: DocRunner refuses a save that leaves a template with no signing fields')
+    return problems
+
+
+def parse_slots(values):
+    slots = {}
+    for v in values or []:
+        label, _, rest = v.partition('=')
+        name, _, order = rest.partition(':')
+        if not label or not name:
+            sys.exit(f'--slot {v!r}: use LABEL="Signer name[:order]", e.g. S1="Owner 1" or CO="PM:2"')
+        slots[label.strip()] = {'name': name.strip(), 'signing_order': int(order) if order else 1}
+    return slots
+
+
+LOADER = r'''// DocRunner: place fields in this template. Generated by make_loader.py.
+// Run on the template's field editor page (/templates/<id>/fields), signed in.
+(async () => {
+  const FIELDS = __FIELDS__
+  const SLOTS = __SLOTS__
+  const APPEND = __APPEND__
+  const DRY_RUN = __DRY_RUN__
+
+  const el = document.querySelector('[data-controller~="field-editor"]')
+  const token = document.querySelector('meta[name="csrf-token"]')?.content
+  if (!el || !token || !/\/templates\/\d+\/fields/.test(location.pathname)) {
+    throw new Error('Open the template\'s field editor first (Templates > the template > Edit fields), then run this again.')
+  }
+  const saveUrl = el.dataset.fieldEditorSaveUrlValue
+  const current = JSON.parse(el.dataset.fieldEditorFieldsValue || '[]')
+  const signers = JSON.parse(el.dataset.fieldEditorSubmittersValue || '[]')
+  const templateId = location.pathname.match(/templates\/(\d+)/)[1]
+
+  // 1. Backup first.
+  const backup = new Blob([JSON.stringify({ template_id: templateId, saved_at: new Date().toISOString(), fields: current, submitters: signers }, null, 1)], { type: 'application/json' })
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(backup), download: `docrunner-template-${templateId}-backup.json` })
+  document.body.appendChild(a); a.click(); a.remove()
+
+  // 2. Signers: match by name, add the missing ones.
+  const added = []
+  const uuidFor = {}
+  for (const [label, want] of Object.entries(SLOTS)) {
+    let s = signers.find((x) => (x.name || '').trim().toLowerCase() === want.name.toLowerCase())
+    if (!s) {
+      s = { uuid: crypto.randomUUID(), name: want.name, signing_order: want.signing_order }
+      signers.push(s)
+      added.push(want.name)
+    }
+    uuidFor[label] = s.uuid
+  }
+
+  // 3. Fields: signer labels become the template's signer ids.
+  const incoming = FIELDS.map((f) => {
+    const { submitter, ...rest } = f
+    return submitter ? { ...rest, submitter_uuid: uuidFor[submitter] } : rest
+  })
+  let fields = incoming
+  let skipped = 0
+  if (APPEND) {
+    const have = new Set(current.map((f) => `${f.name}|${f.page}`))
+    const fresh = incoming.filter((f) => !have.has(`${f.name}|${f.page}`))
+    skipped = incoming.length - fresh.length
+    fields = current.concat(fresh)
+  }
+  // A signer no field uses (a new template's default "Signer") would become an
+  // extra role on the packet template, and a packet missing a role never completes.
+  const used = new Set(fields.map((f) => f.submitter_uuid).filter(Boolean))
+  const removed = signers.filter((s) => !used.has(s.uuid)).map((s) => s.name)
+  const keep = signers.filter((s) => used.has(s.uuid))
+  signers.length = 0
+  signers.push(...keep)
+
+  const summary = `${APPEND ? 'Adding' : 'Replacing'}: template ${templateId} had ${current.length} fields; it will have ${fields.length}` +
+    (skipped ? ` (${skipped} skipped: same name on the same page)` : '') +
+    `. Signers: ${signers.map((s) => s.name).join(', ')}${added.length ? ` (new: ${added.join(', ')})` : ''}` +
+    `${removed.length ? `; removed, no fields: ${removed.join(', ')}` : ''}.`
+  console.log(summary)
+  if (DRY_RUN) { console.log('Dry run: nothing saved.', { fields, submitters: signers }); return }
+
+  // 4. Save through the editor's own request, then reload to check.
+  const res = await fetch(saveUrl, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRF-Token': token },
+    body: JSON.stringify({ fields, submitters: signers })
+  })
+  const result = await res.json().catch(() => ({}))
+  if (!res.ok || !result.success) throw new Error('DocRunner did not save: ' + ((result.errors || []).join(', ') || res.status))
+  console.log('Saved. Reloading the editor; DocRunner renames variables to its snake_case form on save.')
+  location.reload()
+})()
+'''
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Make a loader that places generated fields in a DocRunner template.')
+    parser.add_argument('fields', help='the JSON list from build_fields.py')
+    parser.add_argument('--slot', action='append', help='LABEL="Signer name[:signing order]", one per signer label used in the fields')
+    parser.add_argument('--append', action='store_true', help='add to the template\'s fields instead of replacing them')
+    parser.add_argument('--dry-run', action='store_true', help='back up and show what would be saved, without saving')
+    args = parser.parse_args()
+    fields = json.load(open(args.fields))
+    slots = parse_slots(args.slot)
+    problems = check(fields, slots)
+    if problems:
+        print('\n'.join(problems), file=sys.stderr)
+        sys.exit(f'{len(problems)} problems; nothing written.')
+    js = (LOADER.replace('__FIELDS__', json.dumps(fields))
+                .replace('__SLOTS__', json.dumps(slots))
+                .replace('__APPEND__', 'true' if args.append else 'false')
+                .replace('__DRY_RUN__', 'true' if args.dry_run else 'false'))
+    sys.stdout.write(js)
+    kinds = {}
+    for f in fields:
+        kinds[f['type']] = kinds.get(f['type'], 0) + 1
+    print(f'{len(fields)} fields checked {kinds}; signers {[s["name"] for s in slots.values()]}', file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()

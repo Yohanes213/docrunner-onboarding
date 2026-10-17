@@ -1,0 +1,9 @@
+{
+  "billing_email":          { "label": "Billing email", "group": "Billing" },
+  "po_number":              { "label": "PO number", "group": "Billing" },
+  "second_signer_email":    { "label": "Second signer email", "group": "Contacts" },
+  "addon_priority_support": { "label": "Priority support", "group": "Add-ons", "absent": "No" },
+  "addon_onsite_training":  { "label": "On-site training", "group": "Add-ons", "absent": "No" },
+  "site_access_notes":      { "label": "Site access notes", "group": "Access", "may_hold_code": true },
+  "invoice_notes":          { "label": "Invoice notes", "group": "Billing" }
+}

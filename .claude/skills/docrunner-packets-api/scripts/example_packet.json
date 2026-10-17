@@ -1,0 +1,20 @@
+{
+  "packet": {
+    "id": 1001,
+    "status": "complete",
+    "completed_at": "2026-10-13T22:15:00Z",
+    "submitted_fields": [
+      { "name": "s1_signature", "type": "signature", "value": "Alex Customer", "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "billing_email", "type": "text", "value": "ap@acme.example", "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "po_number", "type": "text", "value": "PO-7781", "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "addon_priority_support", "type": "checkbox", "value": true, "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "addon_onsite_training", "type": "checkbox", "value": false, "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "site_access_notes", "type": "text", "value": "Badge desk, temp password 88213", "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "second_signer_email", "type": "text", "value": null, "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "w9_ssn", "type": "text", "value": "123-45-6789", "template_id": 86, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "invoice_notes", "type": "text", "value": "Our EIN is 12-3456789", "template_id": 85, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "billing_email", "type": "text", "value": null, "template_id": 87, "signer": { "name": "Alex Customer", "email": "alex@example.com", "role": "owner" } },
+      { "name": "company_signature", "type": "signature", "value": "Jordan Rep", "template_id": 85, "signer": { "name": "Jordan Rep", "email": "jordan@yourcompany.example", "role": "pm" } }
+    ]
+  }
+}

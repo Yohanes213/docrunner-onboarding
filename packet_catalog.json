@@ -1,0 +1,13 @@
+{
+  "packet_template": {
+    "key": "client_onboarding",
+    "title": "Client onboarding",
+    "packet_template_id": 57,
+    "optional_variables": [],
+    "fields_files": [
+      "docrunner-templates/01_statement_of_work/template_fields.json",
+      "docrunner-templates/02_mutual_nda/template_fields.json",
+      "docrunner-templates/03_ip_assignment/template_fields.json"
+    ]
+  }
+}
