@@ -1,97 +1,142 @@
-# DocRunner skills packet
+# DocRunner onboarding
 
-Four Claude Code skills that take a developer from a new DocRunner account
-to signed documents flowing back into their app, plus a list of known API
-gaps. The template skill was tested end to end on live DocRunner
-(October 2026): a 2-page agreement went from PDF to 19 placed fields, two
-signers, without touching the editor by hand. They work for any document that needs signing: service
-agreements, employment and contractor paperwork, sales contracts, consent
-and intake forms, vendor onboarding, NDAs. They come from production
-integrations, including a 31-page agreement with nearly 200 fields, two
-signers on one side and a countersigner on the other.
+A software agency onboards a new client with one plain-English sentence. Claude reads the request and fills the variables of the agency's onboarding packet. The packet goes to the client for signature through DocRunner. The client signs first, then the agency countersigns. A small webhook server logs each event and saves the signed PDF.
 
-API reference: https://developer.docrunner.io (base URL
-`https://app.docrunner.io/api`, key in the `X-API-Key` header).
+```
+"Onboard Acme Corp. Contact Jane Doe ..."
+        │
+   agent.py ── Claude fills the variables, then:
+        │         GET  /api/packet_templates/57
+        │         POST /api/packets            client → owner, agency countersigner → pm
+        │         POST /api/packets/:id/send   test mode: signing links come back
+        ▼
+   DocRunner ── Packet.Sent · Submitter.Opened · Submitter.Signed · Packet.Completed
+        │
+   webhook_server.py ── verifies the signature, logs the event, saves signed/packet-<id>.pdf
+```
 
-## What's inside
+## What's in the repo
 
-| Skill | Use it when you're... |
+| Path | What it is |
 |---|---|
-| `docrunner-setup/` | Starting out, or going live. The order to do everything in, the steps that happen in the DocRunner app (API key, uploading the PDF, the packet template, test mode), a script that checks a packet template is ready for your app, the test loop and a go-live checklist. **Start here.** |
-| `docrunner-template-mapping/` | Turning a PDF into a DocRunner template, end to end: Claude finds every blank in the PDF, builds the field list (what your app fills, what each signer fills), and places the fields in your template, with a backup first. No dragging fields by hand. |
-| `docrunner-packets-api/` | Creating and sending packets from your app, following their status, and reading what each signer typed back into your app (`submitted_fields`), without keeping sensitive values. |
-| `docrunner-webhooks/` | Receiving DocRunner's webhooks: verifying the signature, applying each delivery once, mapping events to your records, and keeping a polling fallback. |
-| `KNOWN-ISSUES.md` | What the API can't do yet and the workaround for each. Read it before you design. |
+| `agent.py` | Turns a request into a packet, sends it in test mode, prints the signing links |
+| `webhook_server.py` | Receives DocRunner webhooks at `POST /hooks/docrunner`, verifies `X-DocRunner-Signature`, logs events, saves the signed PDF on `Packet.Completed` |
+| `docrunner_client.py` | Small DocRunner API client shared by both scripts. The key goes only in the `X-API-Key` header |
+| `packet_catalog.json` | The packet template id (57) and the field lists the agent fills |
+| `docrunner-templates/<doc>/` | Per document: `build_fields.py` (field spec), `template_fields.json` (field list), `place_fields.js` (loader for the template editor) |
+| `PDFs/` | The three source documents |
+| `.claude/skills/` | DocRunner skills for Claude Code: template mapping, the API, webhooks, setup |
+| `docs/docrunner-skills-packet.md` | The original readme from the DocRunner skills packet |
+| `KNOWN-ISSUES.md` | DocRunner API gaps and the workaround for each |
 
-Each skill folder has a `SKILL.md` (what Claude reads first) and, where
-useful, `references/` (longer docs) and `scripts/` (runnable code).
+## Requirements
 
-## Install
+- Python 3.9 or newer.
+- A DocRunner account and an API key.
+- An Anthropic API key.
+- ngrok or Cloudflare Tunnel, so DocRunner can reach your machine for webhooks.
 
-Copy the four skill folders into your project's `.claude/skills/` (or
-`~/.claude/skills/` to have them everywhere):
+## Setup
 
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env               # then fill it in
 ```
-mkdir -p .claude/skills
-cp -r docrunner-setup docrunner-template-mapping docrunner-packets-api docrunner-webhooks .claude/skills/
-```
 
-Claude Code picks them up on its own when a task matches (for example
-"place the fields for this contract PDF in my DocRunner template" or "handle
-DocRunner's Packet.Completed webhook"). You can also ask for one by name.
+Fill in these values in `.env`. Never commit `.env`. It is listed in `.gitignore`.
 
-To have Claude place fields in your template itself, give it a browser tool
-signed in to your DocRunner account (Claude in Chrome, or Playwright
-connected to your browser). Without one, Claude hands you a script to paste
-into the browser console on the template's Edit fields page.
-
-The scripts need Python 3 and nothing else, except `find_blanks.py`, which
-also needs `pip install pdfplumber`.
-
-## Start to finish
-
-| Step | Where | Skill |
+| Variable | Required | What it is |
 |---|---|---|
-| 1. Get the API key | DocRunner: Settings > Developer Tools > API Keys | `docrunner-setup` |
-| 2. Upload the PDF as a document template | DocRunner: Doc Templates | `docrunner-setup` |
-| 3. Find the blanks, build the fields, place them | Claude + the template's Edit fields page | `docrunner-template-mapping` |
-| 4. Build the packet template, switch it to Test Mode | DocRunner: Packet Templates | `docrunner-setup` |
-| 5. Check it's ready for your app | `check_packet_template.py` | `docrunner-setup` |
-| 6. Create, send and follow packets; read the answers back | Your app | `docrunner-packets-api` |
-| 7. Receive webhooks | Your app + Settings > Developer Tools > Webhooks | `docrunner-webhooks` |
-| 8. Test loop, then go live | Both | `docrunner-setup` |
+| `DOCRUNNER_API_KEY` | yes | DocRunner: Settings > Developer Tools > API Keys |
+| `DOCRUNNER_WEBHOOK_SECRET` | yes | Displayed once by DocRunner |
+| `ANTHROPIC_API_KEY` | yes | Your Anthropic API key |
+| `AGENCY_COUNTERSIGNER_NAME` | yes | The agency's countersigner, who signs as `pm` |
+| `AGENCY_COUNTERSIGNER_EMAIL` | yes | The countersigner's email |
+| `TEST_SIGNER_EMAIL` | yes | Every signer's address is replaced with this one on test packets |
+| `ANTHROPIC_MODEL` | no | Overrides the Claude model. The default is `claude-sonnet-5-5` |
+| `DOCRUNNER_ACCOUNT_ID` | no | Ignores webhooks from any other DocRunner account |
+| `WEBHOOK_PORT` | no | Webhook server port. The default is 8000 |
 
-Ask Claude "set up DocRunner for this app" and it starts at step 1.
+## 1. Check the packet template
 
-## The ten things worth knowing before you start
+Packet template 57 in DocRunner is already set up for this app. It is in Test Mode and has the `owner` and `pm` roles. To check it again, export the key from `.env` and run the read-only check:
 
-1. **Variable names are normalized on save.** DocRunner stores variable
-   names in snake_case with repeated underscores collapsed, so
-   `plan__tier` becomes `plan_tier`. Normalize the same way before you send
-   values, or they never land.
-2. **A checkbox variable ticks only on the string `"true"`.** Send `""` for
-   the boxes that stay empty.
-3. **One variable per option** for anything your app ticks (a choice or a
-   multi-select): `<field>_<option>`.
-4. **Signature dates fill themselves.** Never mark a `signature_date` field
-   required; a required one blocks the signer's Complete button.
-5. **Role keys are three fixed slots.** The API accepts only the keys
-   `owner`, `tenant` and `pm`, whatever your signers are called. Decide once
-   what each slot means in your app (for example `owner` = the customer,
-   `tenant` = a second party, `pm` = your countersigner) and use those keys
-   on every packet template.
-6. **Send needs a body.** `POST /api/packets/:id/send` wants
-   `{ "packet": { "send_email_body": "..." } }`.
-7. **DocRunner emails signers itself, and a new packet template starts in
-   Production.** Switch it to Test Mode before your first packet, and in
-   test swap every signer's email for your own: your app's own test-mode
-   email guard doesn't cover DocRunner's emails.
-8. **Status says *that* someone signed, not who.** The `Submitter.Signed`
-   webhook names them. Use webhooks for who; poll status as the fallback.
-9. **Signer answers come back as `submitted_fields`** on `GET
-   /api/packets/:id`: one entry per field, every signer, with the signer's
-   role. Checkboxes are booleans, signatures are the typed name, and a field
-   placed twice appears twice.
-10. **The API returns every value signers typed, tax forms included** (for
-    example a W-9's SSN or EIN). Drop sensitive fields on read and never log
-    the raw response.
+```bash
+export DOCRUNNER_API_KEY=$(grep '^DOCRUNNER_API_KEY=' .env | cut -d= -f2-)
+python3 .claude/skills/docrunner-setup/scripts/check_packet_template.py 57 --roles owner,pm
+```
+
+Exit code 0 means the template is ready for the API. Exit code 1 means a problem.
+
+The template holds the statement of work and the mutual NDA. The check lists no IP assignment variables, so make sure that the IP assignment is on the template in DocRunner before you rely on it.
+
+## 2. Place the template fields (only for a new template)
+
+Skip this step for template 57. Use this step to build a new template.
+
+1. In DocRunner, go to **Doc Templates > New**. Upload each PDF in `PDFs/` as its own document template.
+2. In Claude Code, use the `docrunner-template-mapping` skill. Ask it to map the fields of each PDF. The client signs as **Owner**, and the agency countersigns as **PM** with signing order 2. The skill writes `template_fields.json` and `place_fields.js` in `docrunner-templates/<doc>/`.
+3. For each document template, open **Edit fields**, open the browser console, paste that document's `place_fields.js`, and press Enter. The loader downloads a backup first, then places the fields and signers.
+4. Go to **Packet Templates > New**. Add the documents in order. Check that the roles are `owner` and `pm`, then switch the template to **Test Mode**.
+
+To regenerate a loader from its field list, run:
+
+```bash
+python3 .claude/skills/docrunner-template-mapping/scripts/make_loader.py docrunner-templates/01_statement_of_work/template_fields.json --slot S1="Owner" --slot CO="PM:2" > place_fields.js
+```
+
+## 3. Set up the webhooks
+
+Start the webhook server in one terminal, and the tunnel in another:
+
+```bash
+python3 webhook_server.py          # listens on port 8000
+ngrok http 8000                    # gives you a public address
+```
+
+In DocRunner, go to **Settings > Developer Tools > Webhooks > New endpoint**:
+
+- URL: `https://<your-ngrok-host>/hooks/docrunner`
+- Events: `Packet.Sent`, `Submitter.Opened`, `Submitter.Signed`, `Packet.Completed`
+- Copy the secret into `DOCRUNNER_WEBHOOK_SECRET` in `.env`. Restart the server. Then press **Send test**.
+
+Logs go to the console and to `logs/webhook_events.log`. Signed PDFs go to `signed/`, named `packet-<id>.pdf`.
+
+## 4. Create and send a packet
+
+Run the agent with the request in quotes:
+
+```bash
+python3 agent.py "Onboard Acme Corp. Contact Jane Doe, jane@acme.test. Mobile app MVP for 8500 dollars starting November 3, about 6 weeks, half up front and half on delivery. Scope: build the iOS and Android MVP. The NDA starts October 17 2026 and lasts 2 years."
+```
+
+The request must include:
+
+- The client's name and email.
+- A scope of work.
+- The NDA's effective date.
+- The NDA's term in years.
+
+If a value is missing, the agent stops and names it. It creates no packet until every required value is present.
+
+When the agent succeeds, it prints the packet id and the signing links from the send response. The send response lists only the signer who is up next. The client signs first, so the countersigner's link appears after the client signs. Open the client's link to sign. The webhook terminal logs each event. DocRunner then sends `Packet.Completed`, and the server saves the signed PDF to `signed/`.
+
+## Test mode
+
+The packet template is in DocRunner Test Mode, so DocRunner sends no email. As a second guard, the agent replaces every signer's email with `TEST_SIGNER_EMAIL`.
+
+## Notes
+
+- **Blank values:** the agent refuses to create a packet while a required value is blank, and it names the missing values.
+- **No commas in values:** values go out without commas, such as `$8500` and `November 3 2026`. Commas are also removed from text such as the scope of work. DocRunner can drop text after a comma. See the DocRunner packets API skill in `.claude/skills/docrunner-packets-api/`.
+- **Role keys:** DocRunner accepts only `owner`, `tenant` and `pm`. Here, `owner` is the client and `pm` is the agency's countersigner.
+- **Webhook path:** the path has no token. Set `DOCRUNNER_ACCOUNT_ID` to ignore deliveries from other DocRunner accounts.
+- **Download on completion:** the server downloads the signed PDF before it replies. If the download fails, it replies with 500, so DocRunner retries the delivery.
+
+## Known limits
+
+- The signed PDF download has not been tested against a live completed packet.
+- The send response lists only the signer who is up next. The countersigner's link appears after the client signs.
+- The check does not show the IP assignment on packet template 57. Open the template in DocRunner to see whether it is there.
